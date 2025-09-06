@@ -1,138 +1,178 @@
 """
 Модуль для работы с API Центрального Банка России.
-Предоставляет функционал для получения актуальных курсов валют.
+Предоставляет функционал для получения актуальных курсов валют с кэшированием.
 """
 
 # Стандартные библиотеки Python
-import sys # Доступ к системным параметрам и функциям
-import os # Взаимодействие с ОС и работой с путями
-import requests  # Выполнение HTTP-запросов к внешним API
-from datetime import datetime  # Работа с датой и временем
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) # Добавляем корневую директорию проекта в путь Python
-from version import __version__ # Импорт версии ПО
-import logging  # Логирование событий и ошибок приложения
-import time  # Работа с временными задержками
+import sys
+import os
+import requests
+from datetime import datetime, date, timedelta
+import json
+import logging
+import time
 
-# Настройка системы логирования для отслеживания работы приложения
-# Уровень INFO обеспечивает запись информационных сообщений и ошибок
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from version import __version__
+
+# Настройка системы логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-# Создание объекта логгера с именем текущего модуля
-# Позволяет идентифицировать источник сообщений в логах
 logger = logging.getLogger(__name__)
 
 
 class CBRApiClient:
     """
     Клиент для работы с API Центрального Банка России.
-    Обеспечивает получение актуальных курсов валют с обработкой ошибок.
+    Обеспечивает получение актуальных курсов валют с обработкой ошибок и кэшированием.
     """
     
-    # Базовый URL официального API ЦБ РФ для получения курсов валют
     BASE_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
-    
-    # Количество попыток повторного запроса при сбоях
     MAX_RETRIES = 3
-    
-    # Задержка между повторными попытками в секундах
     RETRY_DELAY = 2
 
     def __init__(self):
         """
-        Инициализация клиента API с настройками подключения.
-        Создает HTTP-сессию с параметрами таймаута для надежности.
+        Инициализация клиента API с настройками подключения и кэширования.
         """
-        self.last_update = None  # Время последнего успешного обновления данных
-        self.session = requests.Session()  # Постоянное HTTP-соединение для повторных запросов
-        
-        # Настройка таймаутов для предотвращения зависания приложения:
-        # - 5 секунд на установление соединения
-        # - 10 секунд на ожидание ответа после соединения
+        self.last_update = None
+        self.session = requests.Session()
         self.session.timeout = (5, 10)
-        
-        # Установка стандартных заголовков для HTTP-запросов
         self.session.headers.update({
             'User-Agent': f'PulseCurrency/{__version__} (https://github.com/UNKNOOOOOWN/VkrAgpu)'
         })
-
-        # Временная проверка - выводим установленный User-Agent
-        print(f"Установлен User-Agent: {self.session.headers['User-Agent']}")
+        
+        # Инициализация кэширования
+        self.cache_dir = "cache"
+        self._ensure_cache_dir()
+        
         logger.info(f"Установлен User-Agent: {self.session.headers['User-Agent']}")
+
+    def _ensure_cache_dir(self):
+        """Создает папку для кэша если её нет"""
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+            logger.info(f"Создана директория кэша: {self.cache_dir}")
+    
+    def _get_cache_filename(self, target_date: date) -> str:
+        """Генерирует имя файла для кэша на основе даты"""
+        return os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
+    
+    def _load_from_cache(self, target_date: date):
+        """Загружает данные из кэша для указанной даты"""
+        cache_file = self._get_cache_filename(target_date)
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    logger.info(f"Данные загружены из кэша: {target_date}")
+                    return data
+            except Exception as e:
+                logger.error(f"Ошибка загрузки из кэша {cache_file}: {e}")
+        return None
+    
+    def _save_to_cache(self, data: dict, target_date: date):
+        """Сохраняет данные в кэш для указанной даты"""
+        cache_file = self._get_cache_filename(target_date)
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Данные сохранены в кэш: {target_date}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения в кэш {cache_file}: {e}")
+    
+    def _get_cache_date_from_data(self, data: dict) -> date:
+        """Извлекает дату из данных API и преобразует в объект date"""
+        if 'Date' in data:
+            try:
+                # Преобразуем строку даты из API в объект datetime
+                date_str = data['Date'].split('T')[0]  # Берем только часть с датой
+                return datetime.strptime(date_str, '%Y-%m-%d').date()
+            except (ValueError, IndexError) as e:
+                logger.error(f"Ошибка парсинга даты из API: {e}")
+        return date.today()
+    
+    def _get_last_available_cached_data(self):
+        """Пытается найти последние доступные данные в кэше"""
+        try:
+            # Проверяем последние 7 дней
+            for days_back in range(0, 8):
+                check_date = date.today() - timedelta(days=days_back)
+                cached_data = self._load_from_cache(check_date)
+                if cached_data:
+                    logger.info(f"Найдены кэшированные данные за: {check_date}")
+                    return cached_data
+        except Exception as e:
+            logger.error(f"Ошибка поиска в кэше: {e}")
+        return None
 
     def get_rates(self):
         """
-        Получение актуальных курсов валют с API ЦБ РФ.
+        Получение актуальных курсов валют с API ЦБ РФ с использованием кэширования.
         
         Returns:
-            dict | None: Данные о курсах валют в формате JSON 
-                        или None в случае ошибки после всех попыток
+            dict | None: Данные о курсах валют или None в случае ошибки
         """
-        # Реализация механизма повторных попыток при временных сбоях
+        # Сначала проверяем кэш на сегодняшнюю дату
+        cached_data = self._load_from_cache(date.today())
+        if cached_data:
+            logger.info("Используются кэшированные данные за сегодня")
+            self.last_update = datetime.now()
+            return cached_data
+        
+        # Если в кэше нет данных за сегодня, делаем запрос к API
         for attempt in range(self.MAX_RETRIES):
             try:
                 logger.info(f"Запрос данных с API ЦБ РФ (попытка {attempt + 1}/{self.MAX_RETRIES})")
                 
-                # Выполнение HTTP GET-запроса к API ЦБ РФ
                 response = self.session.get(self.BASE_URL)
-                
-                # Проверка успешности HTTP-запроса (статус 200-299)
                 response.raise_for_status()
                 
-                # Преобразование ответа из формата JSON в словарь Python
                 data = response.json()
                 
-                # Валидация полученных данных
                 if not self._validate_data(data):
                     raise ValueError("Неверная структура данных от API")
                 
-                # Обновление времени последнего успешного запроса
+                # Определяем дату данных и сохраняем в кэш
+                data_date = self._get_cache_date_from_data(data)
+                self._save_to_cache(data, data_date)
+                
                 self.last_update = datetime.now()
-                logger.info(f"Данные успешно получены, время: {self.last_update}")
+                logger.info(f"Данные успешно получены и сохранены в кэш, время: {self.last_update}")
                 
                 return data
 
             except requests.exceptions.RequestException as e:
-                # Обработка ошибок сети и HTTP
                 logger.warning(f"Ошибка сети при попытке {attempt + 1}: {e}")
                 
-                # Последняя попытка завершилась ошибкой
                 if attempt == self.MAX_RETRIES - 1:
-                    logger.error("Все попытки подключения к API завершились ошибкой")
-                    return None
+                    logger.warning("Все попытки подключения к API завершились ошибкой, пробуем использовать кэш")
+                    # При полном сбое сети пытаемся использовать последние доступные кэшированные данные
+                    return self._get_last_available_cached_data()
                 
-                # Пауза перед повторной попыткой с экспоненциальной задержкой
                 time.sleep(self.RETRY_DELAY * (2 ** attempt))
                 
             except ValueError as e:
-                # Обработка ошибок парсинга JSON и валидации данных
                 logger.error(f"Ошибка обработки данных: {e}")
-                return None
+                return self._get_last_available_cached_data()
                 
             except Exception as e:
-                # Обработка любых других непредвиденных ошибок
                 logger.error(f"Непредвиденная ошибка: {e}")
-                return None
+                return self._get_last_available_cached_data()
+        
+        return None
 
     def _validate_data(self, data):
         """
         Проверка корректности и полноты полученных данных от API.
-        
-        Args:
-            data (dict): Данные, полученные от API ЦБ РФ
-            
-        Returns:
-            bool: True если данные валидны, False в противном случае
         """
-        # Проверка наличия обязательных ключей в ответе API
         required_keys = ['Date', 'PreviousDate', 'Valute']
         if not all(key in data for key in required_keys):
             logger.error("Отсутствуют обязательные ключи в ответе API")
             return False
         
-        # Проверка наличия данных по требуемым валютам
         required_currencies = ['USD', 'EUR', 'GBP', 'CNY']
         valute_data = data.get('Valute', {})
         
@@ -141,7 +181,6 @@ class CBRApiClient:
                 logger.error(f"Отсутствуют данные по валюте: {currency}")
                 return False
                 
-            # Проверка наличия обязательных полей для каждой валюты
             currency_data = valute_data[currency]
             required_currency_fields = ['ID', 'NumCode', 'CharCode', 'Nominal', 'Name', 'Value', 'Previous']
             if not all(field in currency_data for field in required_currency_fields):
@@ -149,17 +188,34 @@ class CBRApiClient:
                 return False
         
         return True
+    
+    def clear_old_cache(self, days_to_keep: int = 30):
+        """
+        Очищает старые файлы кэша.
+        
+        Args:
+            days_to_keep (int): Количество дней для хранения кэша (по умолчанию 30)
+        """
+        try:
+            deleted_count = 0
+            for filename in os.listdir(self.cache_dir):
+                if filename.startswith("rates_") and filename.endswith(".json"):
+                    filepath = os.path.join(self.cache_dir, filename)
+                    file_time = datetime.fromtimestamp(os.path.getctime(filepath))
+                    if (datetime.now() - file_time).days > days_to_keep:
+                        os.remove(filepath)
+                        deleted_count += 1
+            logger.info(f"Очищено файлов кэша: {deleted_count}")
+        except Exception as e:
+            logger.error(f"Ошибка очистки кэша: {e}")
 
 
 # Тестирование функционала модуля при прямом запуске
 if __name__ == "__main__":
-    # Создание экземпляра клиента API
     client = CBRApiClient()
     
-    # Получение актуальных курсов валют
     rates = client.get_rates()
     
-    # Проверка и отображение результатов
     if rates:
         print("Данные успешно получены!")
         print(f"Время обновления: {rates['Date']}")
@@ -167,5 +223,9 @@ if __name__ == "__main__":
         print(f"EUR: {rates['Valute']['EUR']['Value']} руб.")
         print(f"GBP: {rates['Valute']['GBP']['Value']} руб.")
         print(f"CNY: {rates['Valute']['CNY']['Value']} руб.")
+        
+        # Показываем информацию о кэше
+        cache_file = client._get_cache_filename(date.today())
+        print(f"\nДанные сохранены в кэш: {cache_file}")
     else:
         print("Не удалось получить данные от API ЦБ РФ")
