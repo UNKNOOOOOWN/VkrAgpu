@@ -28,3 +28,6 @@ Thumbs.db
 # Логи и базы данных
 *.log
 *.sqlite
+
+# Кэш данных
+cache/
