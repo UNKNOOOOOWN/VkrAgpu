@@ -1,0 +1,38 @@
+\PulseCurrency
+│   .gitignore
+│   config.json
+│   main.py
+│   project_tree.txt
+│   requirements.txt
+│   update_version.py
+│   version.py
+│
+├───cache
+│       rates_20250906.json
+│
+├───core
+│   │   api_client.py
+│   │   calculator.py
+│   │   data_handler.py
+│   │   __init__.py
+│   │
+│   └───__pycache__
+│
+├───data
+│       currency_data.json
+│
+├───resources
+├───ui
+│   │   main_window.py
+│   │   styles.qss
+│   │   __init__.py
+│   │
+│   └───__pycache__
+│
+└───venv
+    │   .gitignore
+    │   pyvenv.cfg
+    │
+    ├───Include
+    ├───Lib
+    └───Scripts
