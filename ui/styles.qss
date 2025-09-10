@@ -1,13 +1,17 @@
+/* Основные стили приложения */
 QMainWindow {
     background-color: #f5f5f5;
     font-family: 'Segoe UI', Arial, sans-serif;
 }
 
+/* Стили для таблицы валют */
 QTableWidget {
     gridline-color: #ddd;
     border: 1px solid #ccc;
     background-color: white;
     alternate-background-color: #f9f9f9;
+    selection-background-color: #e3f2fd;
+    selection-color: black;
 }
 
 QTableWidget::item {
@@ -17,6 +21,7 @@ QTableWidget::item {
 
 QTableWidget::item:selected {
     background-color: #e3f2fd;
+    color: black;
 }
 
 QHeaderView::section {
@@ -26,6 +31,7 @@ QHeaderView::section {
     font-weight: bold;
 }
 
+/* Стили для кнопок */
 QPushButton {
     background-color: #4CAF50;
     color: white;
@@ -42,4 +48,306 @@ QPushButton:hover {
 
 QPushButton:pressed {
     background-color: #3d8b40;
+}
+
+QPushButton:disabled {
+    background-color: #cccccc;
+    color: #666666;
+}
+
+/* Стили для выпадающих списков */
+QComboBox {
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: white;
+    selection-background-color: #e3f2fd;
+}
+
+QComboBox:hover {
+    border-color: #999;
+}
+
+QComboBox:focus {
+    border-color: #4CAF50;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #ccc;
+}
+
+QComboBox::down-arrow {
+    image: url(down_arrow.png);
+    width: 12px;
+    height: 12px;
+}
+
+/* Стили для полей ввода */
+QLineEdit {
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: white;
+    selection-background-color: #e3f2fd;
+}
+
+QLineEdit:focus {
+    border-color: #4CAF50;
+}
+
+QLineEdit:hover {
+    border-color: #999;
+}
+
+/* Стили для меток */
+QLabel {
+    color: #333;
+    padding: 2px;
+}
+
+QLabel#chartTitle {
+    font-size: 16px;
+    font-weight: bold;
+    color: #2c3e50;
+    padding: 10px;
+    background-color: #ecf0f1;
+    border-radius: 4px;
+}
+
+QLabel#statsLabel {
+    font-size: 12px;
+    color: #7f8c8d;
+    padding: 5px;
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 3px;
+}
+
+QLabel#loadingLabel {
+    color: #95a5a6;
+    font-style: italic;
+    padding: 10px;
+}
+
+/* Стили для прогресс-бара */
+QProgressBar {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    text-align: center;
+    background-color: #f0f0f0;
+    height: 6px;
+}
+
+QProgressBar::chunk {
+    background-color: #4CAF50;
+    border-radius: 2px;
+}
+
+QProgressBar:indeterminate {
+    background-color: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #4CAF50, stop: 0.5 #8BC34A, stop: 1 #4CAF50);
+    animation: progressAnimation 2s infinite;
+}
+
+/* Анимация для индикатора загрузки */
+@keyframes progressAnimation {
+    0% { background-position: -200px 0; }
+    100% { background-position: 200px 0; }
+}
+
+/* Стили для сплиттера */
+QSplitter::handle {
+    background-color: #ddd;
+    height: 4px;
+}
+
+QSplitter::handle:hover {
+    background-color: #bbb;
+}
+
+QSplitter::handle:horizontal {
+    width: 4px;
+}
+
+QSplitter::handle:vertical {
+    height: 4px;
+}
+
+/* Стили для тулбара */
+QToolBar {
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+    spacing: 5px;
+    padding: 5px;
+}
+
+QToolBar::separator {
+    background-color: #ccc;
+    width: 1px;
+    margin: 5px;
+}
+
+/* Стили для меню */
+QMenuBar {
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+}
+
+QMenuBar::item {
+    padding: 8px 15px;
+    background-color: transparent;
+}
+
+QMenuBar::item:selected {
+    background-color: #e0e0e0;
+}
+
+QMenu {
+    background-color: white;
+    border: 1px solid #ccc;
+}
+
+QMenu::item {
+    padding: 8px 25px 8px 20px;
+}
+
+QMenu::item:selected {
+    background-color: #e3f2fd;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #eee;
+    margin: 5px 0;
+}
+
+/* Стили для статусбара */
+QStatusBar {
+    background-color: #f0f0f0;
+    border-top: 1px solid #ddd;
+    color: #666;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+/* Стили для панели управления */
+QWidget#controlPanel {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    padding: 10px;
+}
+
+/* Стили для конвертера валют */
+QLineEdit#amountInput {
+    background-color: #fff3cd;
+    border-color: #ffeaa7;
+}
+
+QLineEdit#amountInput:focus {
+    border-color: #fdcb6e;
+}
+
+QLabel#convertResult {
+    font-weight: bold;
+    color: #2d3436;
+    background-color: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+/* Стили для сообщений об ошибках */
+QLabel.error {
+    color: #dc3545;
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+QLabel.warning {
+    color: #856404;
+    background-color: #fff3cd;
+    border: 1px solid #ffeaa7;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+QLabel.success {
+    color: #155724;
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+/* Стили для холста matplotlib */
+QWidget#matplotlibCanvas {
+    background-color: white;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+/* Стили для выбранной валюты в таблице */
+QTableWidget::item:selected[currency-selected="true"] {
+    background-color: #bbdefb;
+    font-weight: bold;
+}
+
+/* Стили для волатильности в таблице */
+QTableWidget::item[volatility="high"] {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+QTableWidget::item[volatility="medium"] {
+    color: #fd7e14;
+}
+
+QTableWidget::item[volatility="low"] {
+    color: #28a745;
+}
+
+/* Адаптивные стили для разных размеров экрана */
+@media screen and (max-width: 1024px) {
+    QMainWindow {
+        font-size: 13px;
+    }
+    
+    QTableWidget {
+        font-size: 12px;
+    }
+    
+    QPushButton {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+    
+    QComboBox, QLineEdit {
+        padding: 6px;
+        font-size: 12px;
+    }
+}
+
+/* Темная тема (опционально) */
+[theme="dark"] QMainWindow {
+    background-color: #2c3e50;
+    color: #ecf0f1;
+}
+
+[theme="dark"] QTableWidget {
+    background-color: #34495e;
+    color: #ecf0f1;
+    gridline-color: #4a6572;
+}
+
+[theme="dark"] QHeaderView::section {
+    background-color: #2c3e50;
+    color: #ecf0f1;
+    border-color: #4a6572;
 }
