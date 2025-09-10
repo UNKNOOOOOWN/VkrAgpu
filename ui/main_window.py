@@ -9,16 +9,53 @@ from PyQt6.QtWidgets import (QMainWindow, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget, QHeaderView, QPushButton,
                              QHBoxLayout, QLabel, QComboBox, QSpinBox, 
                              QMessageBox, QStatusBar, QSplitter, QProgressBar,
-                             QToolBar, QMenu, QMenuBar, QLineEdit)
-from PyQt6.QtCore import QTimer, Qt, QDate
+                             QToolBar, QMenu, QMenuBar, QLineEdit, QApplication)
+from PyQt6.QtCore import QTimer, Qt, QDate, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QColor, QFont, QIcon, QPixmap, QAction
 
 # Импорты ваших модулей
-from core.api_client import CBRApiClient
+from core.api_client import CBRApiClient, AsyncApiWorker
 from core.data_handler import DataHandler
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
+
+
+class ChartLoader(QObject):
+    """Класс для асинхронной загрузки данных графика"""
+    chart_loaded = pyqtSignal(str, dict)  # currency_code, chart_data
+    chart_error = pyqtSignal(str, str)    # currency_code, error_message
+    progress_updated = pyqtSignal(int, int, str)  # current, total, currency_code
+    
+    def __init__(self, data_handler):
+        super().__init__()
+        self.data_handler = data_handler
+        self._is_running = False
+        
+    def load_chart(self, currency_code, period):
+        """Загрузка данных графика"""
+        if self._is_running:
+            return
+            
+        self._is_running = True
+        try:
+            chart_data = self.data_handler.get_historical_data_for_chart(currency_code, period)
+            if chart_data:
+                self.chart_loaded.emit(currency_code, chart_data)
+            else:
+                self.chart_error.emit(currency_code, "Нет данных для построения графика")
+                
+        except Exception as e:
+            error_msg = f"Ошибка при загрузке графика: {str(e)}"
+            logger.error(error_msg)
+            self.chart_error.emit(currency_code, error_msg)
+        finally:
+            self._is_running = False
+            
+    def stop(self):
+        """Остановка загрузки"""
+        self._is_running = False
+
 
 class MplCanvas(FigureCanvas):
     """Matplotlib canvas for embedding plots."""
@@ -33,6 +70,7 @@ class MplCanvas(FigureCanvas):
         self.axes.grid(True, alpha=0.3)
         self.axes.set_facecolor('#f8f9fa')
 
+
 class MainWindow(QMainWindow):
     """
     Главное окно приложения для анализа и мониторинга курсов валют.
@@ -45,9 +83,24 @@ class MainWindow(QMainWindow):
         
         self.current_data = []
         self.historical_data = {}
+        self.chart_cache = {}  # Кэш для уже построенных графиков
+        
+        # Для управления асинхронной загрузкой
+        self.chart_loader = ChartLoader(self.data_handler)
+        self.chart_loader_thread = QThread()
+        self.chart_loader.moveToThread(self.chart_loader_thread)
+        self.chart_loader_thread.start()
+        
+        # Текущая загружаемая валюта
+        self.current_currency = None
+        self.current_period = 7
         
         self.init_ui()
         self.load_initial_data()
+        
+        # Подключаем сигналы загрузчика
+        self.chart_loader.chart_loaded.connect(self.on_chart_loaded)
+        self.chart_loader.chart_error.connect(self.on_chart_error)
         
         # Настройка таймера для автоматического обновления (каждые 30 минут)
         self.timer = QTimer()
@@ -132,8 +185,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.currency_combo)
         
         self.period_spin = QSpinBox()
-        self.period_spin.setRange(7, 365)
-        self.period_spin.setValue(30)
+        self.period_spin.setRange(7, 30)
+        self.period_spin.setValue(7)
         self.period_spin.setSuffix(" дней")
         self.period_spin.valueChanged.connect(self.on_period_changed)
         toolbar.addWidget(QLabel("Период:"))
@@ -223,6 +276,17 @@ class MainWindow(QMainWindow):
         self.stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stats_label.setFont(QFont("Arial", 9))
         layout.addWidget(self.stats_label)
+        
+        # Индикатор загрузки
+        self.loading_label = QLabel("")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(self.loading_label)
+        
+        # Прогресс-бар
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
     
     def load_initial_data(self):
         """Загрузка начальных данных."""
@@ -277,7 +341,7 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
             
-            # Заглушка для волатильности (будет обновляться при выборе валюты)
+            # Заглушка для волатильности
             vol_item = QTableWidgetItem("Н/Д")
             vol_item.setFlags(vol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 7, vol_item)
@@ -301,12 +365,18 @@ class MainWindow(QMainWindow):
         """Обработчик выбора валюты для графика."""
         currency_code = self.currency_combo.currentData()
         if currency_code:
+            self.current_currency = currency_code
             self.update_chart(currency_code)
     
-    def on_period_changed(self):
+    def on_period_changed(self, period):
         """Обработчик изменения периода графика."""
-        if self.currency_combo.currentData():
-            self.on_currency_selected()
+        self.current_period = period
+        if self.current_currency:
+            # При изменении периода очищаем кэш для этой валюты
+            cache_key = f"{self.current_currency}_{period}"
+            if cache_key in self.chart_cache:
+                del self.chart_cache[cache_key]
+            self.update_chart(self.current_currency)
     
     def on_table_selection_changed(self):
         """Обработчик выбора строки в таблице."""
@@ -318,65 +388,103 @@ class MainWindow(QMainWindow):
     
     def update_chart(self, currency_code):
         """Обновление графика для выбранной валюты."""
-        try:
-            period = self.period_spin.value()
-            chart_data = self.data_handler.get_historical_data_for_chart(currency_code, period)
+        period = self.period_spin.value()
+        cache_key = f"{currency_code}_{period}"
+        
+        # Проверяем кэш
+        if cache_key in self.chart_cache:
+            self._display_chart(self.chart_cache[cache_key])
+            return
+        
+        # Показываем индикатор загрузки
+        self.show_loading_indicator(currency_code)
+        
+        # Запускаем асинхронную загрузку
+        QApplication.processEvents()  # Обновляем UI
+        self.chart_loader.load_chart(currency_code, period)
+    
+    def show_loading_indicator(self, currency_code):
+        """Показать индикатор загрузки"""
+        self.loading_label.setText(f"Загрузка данных для {currency_code}...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+    
+    def hide_loading_indicator(self):
+        """Скрыть индикатор загрузки"""
+        self.loading_label.setText("")
+        self.progress_bar.setVisible(False)
+    
+    def on_chart_loaded(self, currency_code, chart_data):
+        """Обработчик успешной загрузки графика"""
+        if currency_code != self.current_currency:
+            return  # Игнорируем старые запросы
             
-            if not chart_data:
-                self.chart_title.setText(f"Нет данных для {currency_code}")
-                self.canvas.axes.clear()
-                self.canvas.axes.text(0.5, 0.5, 'Нет данных для построения графика', 
-                                    horizontalalignment='center', verticalalignment='center',
-                                    transform=self.canvas.axes.transAxes, fontsize=12)
-                self.canvas.draw()
-                return
-                
-            # Обновляем заголовок
-            self.chart_title.setText(
-                f"{chart_data['currency_name']} ({currency_code}) - "
-                f"Волатильность: {chart_data['volatility']}%"
-            )
+        self.hide_loading_indicator()
+        
+        # Сохраняем в кэш
+        cache_key = f"{currency_code}_{self.current_period}"
+        self.chart_cache[cache_key] = chart_data
+        
+        # Отображаем график
+        self._display_chart(chart_data)
+    
+    def on_chart_error(self, currency_code, error_message):
+        """Обработчик ошибки загрузки графика"""
+        if currency_code != self.current_currency:
+            return
             
-            # Очищаем и строим график
-            self.canvas.axes.clear()
-            
-            dates = [datetime.fromisoformat(d) for d in chart_data['dates']]
-            values = chart_data['normalized_values']
-            
-            # Построение графика
-            self.canvas.axes.plot(dates, values, 'b-', linewidth=2, label='Курс', marker='o', markersize=3)
-            self.canvas.axes.set_xlabel('Дата')
-            self.canvas.axes.set_ylabel('Курс, руб.')
-            self.canvas.axes.set_title(f'Динамика курса {currency_code} за {period} дней')
-            self.canvas.axes.legend()
-            
-            # Форматирование дат на оси X
-            self.canvas.axes.xaxis.set_major_formatter(DateFormatter('%d.%m.%Y'))
-            self.canvas.fig.autofmt_xdate()
-            
-            self.canvas.draw()
-            
-            # Обновляем статистику
-            stats = chart_data['statistics']
-            stats_text = (
-                f"Среднее: {stats['mean']:.4f} | "
-                f"Мин: {stats['min']:.4f} | "
-                f"Макс: {stats['max']:.4f} | "
-                f"Общее изменение: {stats['total_return']:+.2f}%"
-            )
-            self.stats_label.setText(stats_text)
-            
-            # Обновляем волатильность в таблице
-            self.update_volatility_in_table(currency_code, chart_data['volatility'])
-            
-        except Exception as e:
-            logger.error(f"Ошибка при обновлении графика: {e}")
-            self.chart_title.setText("Ошибка при построении графика")
-            self.canvas.axes.clear()
-            self.canvas.axes.text(0.5, 0.5, f'Ошибка: {str(e)}', 
-                                horizontalalignment='center', verticalalignment='center',
-                                transform=self.canvas.axes.transAxes, fontsize=10, color='red')
-            self.canvas.draw()
+        self.hide_loading_indicator()
+        
+        # Показываем сообщение об ошибке
+        self.chart_title.setText(f"Ошибка загрузки данных для {currency_code}")
+        self.canvas.axes.clear()
+        self.canvas.axes.text(0.5, 0.5, error_message, 
+                            horizontalalignment='center', verticalalignment='center',
+                            transform=self.canvas.axes.transAxes, fontsize=10)
+        self.canvas.draw()
+        self.stats_label.setText("")
+    
+    def _display_chart(self, chart_data):
+        """Отображает график из данных"""
+        currency_code = chart_data['currency_code']
+        
+        # Обновляем заголовок
+        self.chart_title.setText(
+            f"{chart_data['currency_name']} ({currency_code}) - "
+            f"Волатильность: {chart_data['volatility']:.2f}%"
+        )
+        
+        # Очищаем и строим график
+        self.canvas.axes.clear()
+        
+        dates = [datetime.fromisoformat(d) for d in chart_data['dates']]
+        values = chart_data['normalized_values']
+        
+        # Построение графика
+        self.canvas.axes.plot(dates, values, 'b-', linewidth=2, label='Курс', marker='o', markersize=3)
+        self.canvas.axes.set_xlabel('Дата')
+        self.canvas.axes.set_ylabel('Курс, руб.')
+        self.canvas.axes.set_title(f'Динамика курса {currency_code} за {len(dates)} дней')
+        self.canvas.axes.legend()
+        
+        # Форматирование дат на оси X
+        self.canvas.axes.xaxis.set_major_formatter(DateFormatter('%d.%m.%Y'))
+        self.canvas.fig.autofmt_xdate()
+        
+        self.canvas.draw()
+        
+        # Обновляем статистику
+        stats = chart_data['statistics']
+        stats_text = (
+            f"Среднее: {stats['mean']:.4f} | "
+            f"Мин: {stats['min']:.4f} | "
+            f"Макс: {stats['max']:.4f} | "
+            f"Общее изменение: {stats['total_return']:+.2f}%"
+        )
+        self.stats_label.setText(stats_text)
+        
+        # Обновляем волатильность в таблице
+        self.update_volatility_in_table(currency_code, chart_data['volatility'])
     
     def update_volatility_in_table(self, currency_code, volatility):
         """Обновление значения волатильности в таблице."""
@@ -424,5 +532,12 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Обработчик закрытия окна."""
+        # Останавливаем загрузчик
+        self.chart_loader.stop()
+        self.chart_loader_thread.quit()
+        self.chart_loader_thread.wait()
+        
+        # Останавливаем таймер
         self.timer.stop()
+        
         event.accept()
