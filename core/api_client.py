@@ -1,6 +1,7 @@
 """
 Модуль для работы с API Центрального Банка России.
 Предоставляет функционал для получения актуальных курсов валют с кэшированием.
+Поддерживает синхронные и асинхронные запросы.
 """
 
 # Стандартные библиотеки Python
@@ -11,7 +12,10 @@ from datetime import datetime, date, timedelta
 import json
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Callable
+
+# PyQt6 для асинхронной работы
+from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from version import __version__
@@ -24,10 +28,178 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ApiSignals(QObject):
+    """Сигналы для асинхронной работы API"""
+    data_ready = pyqtSignal(dict, str)  # data, currency_code
+    error_occurred = pyqtSignal(str, str)  # error_message, currency_code
+    progress_updated = pyqtSignal(int, int, str)  # current, total, currency_code
+    finished = pyqtSignal()
+
+
+class AsyncApiWorker(QRunnable):
+    """
+    Асинхронный воркер для получения данных о курсах валют.
+    Работает в отдельном потоке и не блокирует UI.
+    """
+    
+    def __init__(self, currency_code: str, dates: List[date], cache_dir: str = "cache"):
+        super().__init__()
+        self.currency_code = currency_code
+        self.dates = dates
+        self.cache_dir = cache_dir
+        self.signals = ApiSignals()
+        self._is_running = False
+        
+        # Создаем директорию кэша если её нет
+        os.makedirs(cache_dir, exist_ok=True)
+
+    def run(self):
+        """Основной метод выполнения воркера"""
+        self._is_running = True
+        try:
+            total_dates = len(self.dates)
+            result_data = {}
+            
+            for i, target_date in enumerate(self.dates):
+                if not self._is_running:
+                    break
+                    
+                # Обновляем прогресс
+                self.signals.progress_updated.emit(i + 1, total_dates, self.currency_code)
+                
+                # Пытаемся получить данные из кэша
+                cached_data = self._load_from_cache(target_date)
+                if cached_data:
+                    result_data[target_date.strftime('%Y-%m-%d')] = cached_data
+                    continue
+                
+                # Если нет в кэше, запрашиваем из API
+                api_data = self._fetch_from_api(target_date)
+                if api_data:
+                    result_data[target_date.strftime('%Y-%m-%d')] = api_data
+                    self._save_to_cache(api_data, target_date)
+            
+            if self._is_running:
+                self.signals.data_ready.emit(result_data, self.currency_code)
+                
+        except Exception as e:
+            error_msg = f"Ошибка получения данных для {self.currency_code}: {str(e)}"
+            logger.error(error_msg)
+            if self._is_running:
+                self.signals.error_occurred.emit(error_msg, self.currency_code)
+        finally:
+            self.signals.finished.emit()
+            self._is_running = False
+
+    def stop(self):
+        """Остановка выполнения воркера"""
+        self._is_running = False
+
+    def _load_from_cache(self, target_date: date) -> Optional[Dict[str, Any]]:
+        """Загружает данные из кэша для указанной даты"""
+        cache_file = os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
+        if os.path.exists(cache_file):
+            try:
+                # Проверяем свежесть кэша (12 часов)
+                file_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+                if datetime.now() - file_time < timedelta(hours=12):
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        logger.debug(f"Данные загружены из кэша: {target_date}")
+                        return data
+            except Exception as e:
+                logger.warning(f"Ошибка чтения кэша {cache_file}: {e}")
+        return None
+
+    def _save_to_cache(self, data: Dict[str, Any], target_date: date):
+        """Сохраняет данные в кэш для указанной даты"""
+        cache_file = os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.debug(f"Данные сохранены в кэш: {target_date}")
+        except Exception as e:
+            logger.warning(f"Ошибка записи в кэш {cache_file}: {e}")
+
+    def _fetch_from_api(self, target_date: date) -> Optional[Dict[str, Any]]:
+        """Запрашивает данные с API для указанной даты"""
+        session = requests.Session()
+        session.timeout = (5, 10)
+        session.headers.update({
+            'User-Agent': f'PulseCurrency/{__version__} (https://github.com/UNKNOOOOOWN/VkrAgpu)'
+        })
+        
+        # Формируем URL для запроса
+        if target_date == date.today():
+            url = "https://www.cbr-xml-daily.ru/daily_json.js"
+        else:
+            url = f"https://www.cbr-xml-daily.ru/archive/{target_date.year}/{target_date.month:02d}/{target_date.day:02d}/daily_json.js"
+        
+        for attempt in range(3):
+            try:
+                if not self._is_running:
+                    return None
+                    
+                logger.debug(f"Запрос данных с API за {target_date} (попытка {attempt + 1}/3)")
+                
+                response = session.get(url)
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                if not self._validate_data(data):
+                    raise ValueError("Неверная структура данных от API")
+                
+                logger.debug(f"Данные за {target_date} успешно получены")
+                return data
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.warning(f"Данные за {target_date} не найдены на сервере")
+                    return None
+                else:
+                    logger.warning(f"HTTP ошибка {e.response.status_code} при попытке {attempt + 1}: {e}")
+                    
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Ошибка подключения при попытке {attempt + 1}: {e}")
+                
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Таймаут подключения при попытке {attempt + 1}: {e}")
+                
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Ошибка сети при попытке {attempt + 1}: {e}")
+                
+            except Exception as e:
+                logger.error(f"Ошибка обработки данных: {e}")
+                return None
+            
+            # Задержка перед повторной попыткой
+            if attempt < 2 and self._is_running:
+                delay = 2 * (2 ** attempt)
+                time.sleep(delay)
+        
+        return None
+
+    def _validate_data(self, data: Dict[str, Any]) -> bool:
+        """Проверка корректности данных от API"""
+        required_keys = ['Date', 'PreviousDate', 'Valute']
+        if not all(key in data for key in required_keys):
+            logger.error("Отсутствуют обязательные ключи в ответе API")
+            return False
+        
+        valute_data = data.get('Valute', {})
+        if not valute_data:
+            logger.error("Отсутствуют данные о валютах")
+            return False
+            
+        return True
+
+
 class CBRApiClient:
     """
     Клиент для работы с API Центрального Банка России.
     Обеспечивает получение актуальных курсов валют с обработкой ошибок и кэшированием.
+    Поддерживает синхронные и асинхронные запросы.
     """
     
     BASE_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
@@ -48,6 +220,12 @@ class CBRApiClient:
         # Инициализация кэширования
         self.cache_dir = "cache"
         self._ensure_cache_dir()
+        
+        # Пул потоков для асинхронной работы
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(2)  # Ограничиваем количество потоков
+        
+        self.current_worker = None
         
         logger.info(f"Установлен User-Agent: {self.session.headers['User-Agent']}")
 
@@ -115,6 +293,19 @@ class CBRApiClient:
             return self.BASE_URL
         else:
             return f"https://www.cbr-xml-daily.ru/archive/{target_date.year}/{target_date.month:02d}/{target_date.day:02d}/daily_json.js"
+
+    def get_rates_async(self, currency_code: str, dates: List[date]) -> AsyncApiWorker:
+        """
+        Создает асинхронный воркер для получения данных.
+        
+        Args:
+            currency_code (str): Код валюты
+            dates (List[date]): Список дат для запроса
+            
+        Returns:
+            AsyncApiWorker: Воркер для асинхронного выполнения
+        """
+        return AsyncApiWorker(currency_code, dates, self.cache_dir)
 
     def get_rates(self, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """
@@ -287,6 +478,11 @@ class CBRApiClient:
         
         return cache_info
 
+    def stop_current_worker(self):
+        """Останавливает текущий выполняющийся воркер"""
+        if self.current_worker:
+            self.current_worker.stop()
+
 
 # Тестирование функционала модуля при прямом запуске
 if __name__ == "__main__":
@@ -316,6 +512,36 @@ if __name__ == "__main__":
         print(f"Самый старый файл: {cache_info['oldest_file']}")
     if cache_info['newest_file']:
         print(f"Самый новый файл: {cache_info['newest_file']}")
+    
+    # Тестируем асинхронный воркер
+    print("\n=== ТЕСТ АСИНХРОННОГО ВОРКЕРА ===")
+    from datetime import datetime, timedelta
+    
+    # Создаем список дат для тестирования
+    test_dates = [date.today() - timedelta(days=i) for i in range(3)]
+    worker = client.get_rates_async("USD", test_dates)
+    
+    # Простые обработчики для тестирования
+    def on_data_ready(data, currency_code):
+        print(f"Данные получены для {currency_code}: {len(data)} записей")
+    
+    def on_error(error_msg, currency_code):
+        print(f"Ошибка для {currency_code}: {error_msg}")
+    
+    def on_progress(current, total, currency_code):
+        print(f"Прогресс {currency_code}: {current}/{total}")
+    
+    # Подключаем сигналы
+    worker.signals.data_ready.connect(on_data_ready)
+    worker.signals.error_occurred.connect(on_error)
+    worker.signals.progress_updated.connect(on_progress)
+    
+    # Запускаем воркер
+    client.thread_pool.start(worker)
+    
+    # Ждем завершения для демонстрации
+    import time
+    time.sleep(5)
     
     # Очистка старых файлов (можно раскомментировать для тестирования)
     # client.clear_old_cache(7)
