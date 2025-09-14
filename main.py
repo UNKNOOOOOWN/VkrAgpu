@@ -1,144 +1,39 @@
 import sys
-import logging
-import json
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6.QtCore import Qt, QTimer
 
-# Импортируем нашу версию для User-Agent
+# Импортируем утилиты из core
+from core import load_config, setup_logging_from_config, get_config_value
 from version import __version__
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pulse_currency.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Инициализируем логирование с минимальными настройками
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_config():
-    """
-    Загрузка конфигурации из config.json с значениями по умолчанию.
-    """
-    config_path = Path("config.json")
-    default_config = {
-        "app": {
-            "name": "PulseCurrency",
-            "version": "0.5.2",
-            "author": "PulseCurrency Team",
-            "description": "Анализатор динамики курсов валют"
-        },
-        "api": {
-            "base_url": "https://www.cbr-xml-daily.ru",
-            "timeout": 10,
-            "max_retries": 3,
-            "retry_delay": 2,
-            "user_agent": f"PulseCurrency/{__version__} (https://github.com/UNKNOOOOOWN/VkrAgpu)"
-        },
-        "data": {
-            "initial_load_days": 3,
-            "max_chart_days": 7,
-            "default_chart_days": 3,
-            "cache_enabled": True,
-            "cache_duration_hours": 12,
-            "daily_cache_duration_hours": 1
-        },
-        "ui": {
-            "auto_refresh_minutes": 30,
-            "table_show_volatility": False,
-            "default_window_width": 1200,
-            "default_window_height": 800,
-            "theme": "light"
-        },
-        "performance": {
-            "max_concurrent_requests": 2,
-            "request_timeout": 15,
-            "enable_preloading": True,
-            "preload_currencies": ["USD", "EUR", "GBP", "CNY"]
-        },
-        "logging": {
-            "level": "INFO",
-            "log_to_file": True,
-            "log_filename": "pulse_currency.log",
-            "max_log_size_mb": 10,
-            "backup_count": 3
-        }
-    }
-    
-    if config_path.exists():
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                user_config = json.load(f)
-                logger.info("Конфигурационный файл успешно загружен")
-                
-                # Глубокое объединение конфигов
-                def deep_merge(default, user):
-                    for key, value in user.items():
-                        if key in default and isinstance(default[key], dict) and isinstance(value, dict):
-                            deep_merge(default[key], value)
-                        else:
-                            default[key] = value
-                    return default
-                
-                return deep_merge(default_config, user_config)
-                
-        except Exception as e:
-            logger.error(f"Ошибка загрузки config.json: {e}")
-            logger.info("Используются настройки по умолчанию")
-            return default_config
-    else:
-        logger.warning("Файл config.json не найден. Используются настройки по умолчанию")
-        return default_config
-
-def setup_application(config):
+def setup_application(config: dict):
     """
     Настройка приложения Qt с учетом конфигурации.
     """
     app = QApplication(sys.argv)
-    app.setApplicationName(config['app']['name'])
-    app.setApplicationVersion(config['app']['version'])
+    
+    # Устанавливаем метаданные приложения из конфига
+    app_name = get_config_value(config, 'app.name', 'PulseCurrency')
+    app_version = get_config_value(config, 'app.version', __version__)
+    
+    app.setApplicationName(app_name)
+    app.setApplicationVersion(app_version)
     app.setOrganizationName("PulseCurrency")
     
     # Настройка шрифта по умолчанию
     font = QFont("Segoe UI", 10)
     app.setFont(font)
     
-    # Установка размеров окна из конфига
-    window_width = config['ui'].get('default_window_width', 1200)
-    window_height = config['ui'].get('default_window_height', 800)
-    
     return app
 
-def setup_logging(config):
-    """
-    Настройка логирования на основе конфигурации.
-    """
-    log_config = config.get('logging', {})
-    log_level = getattr(logging, log_config.get('level', 'INFO'))
-    
-    # Очищаем существующие обработчики
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-    
-    # Настраиваем логирование
-    handlers = [logging.StreamHandler(sys.stdout)]
-    
-    if log_config.get('log_to_file', True):
-        log_filename = log_config.get('log_filename', 'pulse_currency.log')
-        file_handler = logging.FileHandler(log_filename, encoding='utf-8')
-        handlers.append(file_handler)
-    
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
-    )
-
-def load_styles(app, config):
+def load_styles(app: QApplication, config: dict):
     """
     Загрузка стилей приложения с учетом темы из конфига.
     """
@@ -149,7 +44,7 @@ def load_styles(app, config):
                 styles = f.read()
                 
                 # Применяем тему из конфига
-                theme = config['ui'].get('theme', 'light')
+                theme = get_config_value(config, 'ui.theme', 'light')
                 if theme == 'dark':
                     # Можно добавить преобразование в темную тему
                     styles += "\n/* Dark theme applied */"
@@ -165,9 +60,9 @@ def load_styles(app, config):
     except Exception as e:
         logger.error(f"Ошибка загрузки стилей: {e}")
 
-def show_splash_screen(config):
+def show_splash_screen(config: dict):
     """
-    Показывает экран загрузки.
+    Показывает экран загрузки с информацией из конфига.
     """
     try:
         splash_pix = QPixmap(300, 200)
@@ -176,18 +71,49 @@ def show_splash_screen(config):
         splash = QSplashScreen(splash_pix, Qt.WindowType.WindowStaysOnTopHint)
         splash.setFont(QFont("Segoe UI", 10))
         
-        app_name = config['app']['name']
-        version = config['app']['version']
+        app_name = get_config_value(config, 'app.name', 'PulseCurrency')
+        app_version = get_config_value(config, 'app.version', __version__)
         
-        splash.showMessage(f"Загрузка {app_name} v{version}...\nПодождите пожалуйста", 
+        splash.showMessage(f"Загрузка {app_name} v{app_version}...\nПодождите пожалуйста", 
                           Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
                           Qt.GlobalColor.black)
         splash.show()
         
         QApplication.processEvents()
         return splash
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка создания splash screen: {e}")
         return None
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """
+    Глобальный обработчик исключений.
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    logger.error("Необработанное исключение:", exc_info=(exc_type, exc_value, exc_traceback))
+    
+    # Показываем сообщение об ошибке пользователю
+    try:
+        error_msg = f"""Произошла непредвиденная ошибка:
+
+Тип: {exc_type.__name__}
+Сообщение: {str(exc_value)}
+
+Подробности записаны в лог-файл."""
+        
+        msg_box = QMessageBox()
+        msg_box.setIcon(QMessageBox.Icon.Critical)
+        msg_box.setWindowTitle("Ошибка приложения")
+        msg_box.setText("Произошла непредвиденная ошибка")
+        msg_box.setInformativeText(error_msg)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+    except Exception:
+        # Если даже обработчик ошибок сломался
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
 def main():
     """
@@ -195,14 +121,23 @@ def main():
     Создание и запуск главного окна приложения.
     """
     try:
-        # Загружаем конфигурацию первым делом
-        config = load_config()
+        # Установка глобального обработчика исключений
+        sys.excepthook = handle_exception
+        
+        # Загружаем конфигурацию
+        config = load_config("config.json")
         
         # Настраиваем логирование на основе конфига
-        setup_logging(config)
+        setup_logging_from_config(config)
         
-        logger.info(f"Запуск {config['app']['name']} версии {config['app']['version']}")
-        logger.info(f"Описание: {config['app']['description']}")
+        app_name = get_config_value(config, 'app.name', 'PulseCurrency')
+        app_version = get_config_value(config, 'app.version', __version__)
+        app_description = get_config_value(config, 'app.description', 'Анализатор динамики курсов валют')
+        
+        logger.info(f"Запуск {app_name} версии {app_version}")
+        logger.info(f"Описание: {app_description}")
+        logger.info(f"Python версия: {sys.version}")
+        logger.info(f"Платформа: {sys.platform}")
         
         # Настройка приложения
         app = setup_application(config)
@@ -227,8 +162,8 @@ def main():
             splash.finish(window)
         
         # Устанавливаем размер окна из конфига
-        window_width = config['ui'].get('default_window_width', 1200)
-        window_height = config['ui'].get('default_window_height', 800)
+        window_width = get_config_value(config, 'ui.default_window_width', 1200)
+        window_height = get_config_value(config, 'ui.default_window_height', 800)
         window.resize(window_width, window_height)
         
         window.show()
