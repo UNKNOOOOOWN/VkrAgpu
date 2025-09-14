@@ -25,7 +25,6 @@ class ChartLoader(QObject):
     """Класс для асинхронной загрузки данных графика"""
     chart_loaded = pyqtSignal(str, dict)  # currency_code, chart_data
     chart_error = pyqtSignal(str, str)    # currency_code, error_message
-    progress_updated = pyqtSignal(int, int, str)  # current, total, currency_code
     
     def __init__(self, data_handler):
         super().__init__()
@@ -39,6 +38,7 @@ class ChartLoader(QObject):
             
         self._is_running = True
         try:
+            # Используем упрощенный метод для быстрой загрузки
             chart_data = self.data_handler.get_historical_data_for_chart(currency_code, period)
             if chart_data:
                 self.chart_loaded.emit(currency_code, chart_data)
@@ -76,10 +76,19 @@ class MainWindow(QMainWindow):
     Главное окно приложения для анализа и мониторинга курсов валют.
     """
     
-    def __init__(self):
+    def __init__(self, config=None, load_data=True):
         super().__init__()
-        self.api_client = CBRApiClient()
-        self.data_handler = DataHandler()
+        
+        # Сохраняем конфигурацию
+        self.config = config or {}
+        self.api_config = self.config.get('api', {})
+        self.data_config = self.config.get('data', {})
+        self.ui_config = self.config.get('ui', {})
+        self.performance_config = self.config.get('performance', {})
+        
+        # Инициализируем модули с конфигом
+        self.api_client = CBRApiClient(config=self.api_config)
+        self.data_handler = DataHandler(config=self.data_config)
         
         self.current_data = []
         self.historical_data = {}
@@ -93,24 +102,28 @@ class MainWindow(QMainWindow):
         
         # Текущая загружаемая валюта
         self.current_currency = None
-        self.current_period = 7
+        self.current_period = self.data_config.get('default_chart_days', 3)
         
         self.init_ui()
-        self.load_initial_data()
         
         # Подключаем сигналы загрузчика
         self.chart_loader.chart_loaded.connect(self.on_chart_loaded)
         self.chart_loader.chart_error.connect(self.on_chart_error)
         
-        # Настройка таймера для автоматического обновления (каждые 30 минут)
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(1800000)
+        # Загружаем данные только если явно указано
+        if load_data:
+            QTimer.singleShot(100, self.load_initial_data)
     
     def init_ui(self):
         """Инициализация пользовательского интерфейса."""
-        self.setWindowTitle("PulseCurrency - Анализ динамики курсов валют")
-        self.setGeometry(100, 100, 1200, 800)
+        app_name = self.config.get('app', {}).get('name', 'PulseCurrency')
+        version = self.config.get('app', {}).get('version', '0.5.2')
+        self.setWindowTitle(f"{app_name} - Анализ динамики курсов валют v{version}")
+        
+        # Устанавливаем размеры окна из конфига
+        window_width = self.ui_config.get('default_window_width', 1200)
+        window_height = self.ui_config.get('default_window_height', 800)
+        self.setGeometry(100, 100, window_width, window_height)
         
         # Создание меню
         self.create_menu()
@@ -184,9 +197,13 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(QLabel("Валюта:"))
         toolbar.addWidget(self.currency_combo)
         
+        # Настройка периода из конфига
+        max_chart_days = self.data_config.get('max_chart_days', 7)
+        default_period = self.data_config.get('default_chart_days', 3)
+        
         self.period_spin = QSpinBox()
-        self.period_spin.setRange(7, 30)
-        self.period_spin.setValue(7)
+        self.period_spin.setRange(3, max_chart_days)
+        self.period_spin.setValue(default_period)
         self.period_spin.setSuffix(" дней")
         self.period_spin.valueChanged.connect(self.on_period_changed)
         toolbar.addWidget(QLabel("Период:"))
@@ -233,11 +250,21 @@ class MainWindow(QMainWindow):
     def create_currency_table(self):
         """Создание таблицы для отображения курсов."""
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            "Код", "Валюта", "Номинал", "Курс", "Предыдущий", 
-            "Изменение", "Изменение %", "Волатильность"
-        ])
+        
+        # Определяем колонки в зависимости от настроек
+        show_volatility = self.ui_config.get('table_show_volatility', False)
+        if show_volatility:
+            self.table.setColumnCount(8)
+            self.table.setHorizontalHeaderLabels([
+                "Код", "Валюта", "Номинал", "Курс", "Предыдущий", 
+                "Изменение", "Изменение %", "Волатильность"
+            ])
+        else:
+            self.table.setColumnCount(7)
+            self.table.setHorizontalHeaderLabels([
+                "Код", "Валюта", "Номинал", "Курс", "Предыдущий", 
+                "Изменение", "Изменение %"
+            ])
         
         # Настройка таблицы
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -254,7 +281,9 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(4, 100)  # Предыдущий
         self.table.setColumnWidth(5, 100)  # Изменение
         self.table.setColumnWidth(6, 100)  # Изменение %
-        self.table.setColumnWidth(7, 100)  # Волатильность
+        
+        if show_volatility:
+            self.table.setColumnWidth(7, 100)  # Волатильность
     
     def create_chart_widget(self):
         """Создание виджета для графика."""
@@ -291,6 +320,28 @@ class MainWindow(QMainWindow):
     def load_initial_data(self):
         """Загрузка начальных данных."""
         self.refresh_data()
+        
+        # Запускаем таймер автообновления только после успешной загрузки
+        auto_refresh_minutes = self.ui_config.get('auto_refresh_minutes', 30)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh_data)
+        self.timer.start(auto_refresh_minutes * 60 * 1000)  # Конвертируем минуты в мс
+        
+        # Предзагрузка популярных валют если включено
+        if self.performance_config.get('enable_preloading', True):
+            self.preload_popular_currencies()
+    
+    def preload_popular_currencies(self):
+        """Предзагрузка графиков для популярных валют."""
+        popular_currencies = self.performance_config.get('preload_currencies', ['USD', 'EUR', 'GBP', 'CNY'])
+        period = self.data_config.get('default_chart_days', 3)
+        
+        for currency in popular_currencies:
+            # Загружаем в фоне без отображения
+            cache_key = f"{currency}_{period}"
+            if cache_key not in self.chart_cache:
+                # Можно запустить в отдельном потоке для предзагрузки
+                pass
     
     def refresh_data(self):
         """Обновление данных."""
@@ -298,7 +349,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Загрузка данных...")
             
             # Получаем и обрабатываем данные через DataHandler
+            initial_days = self.data_config.get('initial_load_days', 3)
             data = self.data_handler.fetch_and_process_data()
+            
             if data:
                 self.current_data = data
                 self.update_currency_table()
@@ -317,6 +370,8 @@ class MainWindow(QMainWindow):
         if not self.current_data:
             return
             
+        show_volatility = self.ui_config.get('table_show_volatility', False)
+        column_count = 8 if show_volatility else 7
         self.table.setRowCount(len(self.current_data))
         
         for row, currency in enumerate(self.current_data):
@@ -341,10 +396,11 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
             
-            # Заглушка для волатильности
-            vol_item = QTableWidgetItem("Н/Д")
-            vol_item.setFlags(vol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 7, vol_item)
+            # Добавляем волатильность если включено
+            if show_volatility:
+                vol_item = QTableWidgetItem("Н/Д")
+                vol_item.setFlags(vol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, 7, vol_item)
         
         # Сортируем по коду валюты
         self.table.sortItems(0)
@@ -427,6 +483,31 @@ class MainWindow(QMainWindow):
         
         # Отображаем график
         self._display_chart(chart_data)
+        
+        # Обновляем волатильность в таблице если нужно
+        if self.ui_config.get('table_show_volatility', False):
+            self.update_volatility_in_table(currency_code, chart_data['volatility'])
+    
+    def update_volatility_in_table(self, currency_code, volatility):
+        """Обновление значения волатильности в таблице."""
+        if not self.ui_config.get('table_show_volatility', False):
+            return
+            
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).text() == currency_code:
+                vol_item = QTableWidgetItem(f"{volatility:.2f}%")
+                vol_item.setFlags(vol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                
+                # Цвет в зависимости от уровня волатильности
+                if volatility > 2.0:
+                    vol_item.setForeground(QColor(200, 0, 0))  # Высокая волатильность
+                elif volatility > 1.0:
+                    vol_item.setForeground(QColor(200, 100, 0))  # Средняя волатильность
+                else:
+                    vol_item.setForeground(QColor(0, 128, 0))  # Низкая волатильность
+                    
+                self.table.setItem(row, 7, vol_item)
+                break
     
     def on_chart_error(self, currency_code, error_message):
         """Обработчик ошибки загрузки графика"""
@@ -482,27 +563,6 @@ class MainWindow(QMainWindow):
             f"Общее изменение: {stats['total_return']:+.2f}%"
         )
         self.stats_label.setText(stats_text)
-        
-        # Обновляем волатильность в таблице
-        self.update_volatility_in_table(currency_code, chart_data['volatility'])
-    
-    def update_volatility_in_table(self, currency_code, volatility):
-        """Обновление значения волатильности в таблице."""
-        for row in range(self.table.rowCount()):
-            if self.table.item(row, 0).text() == currency_code:
-                vol_item = QTableWidgetItem(f"{volatility:.2f}%")
-                vol_item.setFlags(vol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                
-                # Цвет в зависимости от уровня волатильности
-                if volatility > 2.0:
-                    vol_item.setForeground(QColor(200, 0, 0))  # Высокая волатильность
-                elif volatility > 1.0:
-                    vol_item.setForeground(QColor(200, 100, 0))  # Средняя волатильность
-                else:
-                    vol_item.setForeground(QColor(0, 128, 0))  # Низкая волатильность
-                    
-                self.table.setItem(row, 7, vol_item)
-                break
     
     def convert_currency(self):
         """Конвертация валюты."""
@@ -538,6 +598,7 @@ class MainWindow(QMainWindow):
         self.chart_loader_thread.wait()
         
         # Останавливаем таймер
-        self.timer.stop()
+        if hasattr(self, 'timer'):
+            self.timer.stop()
         
         event.accept()
