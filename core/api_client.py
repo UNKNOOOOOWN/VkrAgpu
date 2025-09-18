@@ -98,9 +98,25 @@ class AsyncApiWorker(QRunnable):
 
     def _load_from_cache(self, target_date: date) -> Optional[Dict[str, Any]]:
         """Загружает данные из кэша для указанной даты"""
+        # Проверяем, включено ли кэширование в конфиге
+        if not self.config.get('cache_enabled', True):
+            return None
+            
+        # НЕ пытаемся загружать данные из будущего
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка загрузить данные из будущего: {target_date}")
+            return None
+            
         cache_file = os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
         if os.path.exists(cache_file):
             try:
+                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: файл не должен содержать данные из будущего
+                file_date_str = os.path.basename(cache_file).split('_')[1].split('.')[0]
+                file_date = datetime.strptime(file_date_str, '%Y%m%d').date()
+                if file_date > datetime.now().date():
+                    logger.warning(f"Файл кэша содержит данные из будущего: {file_date}")
+                    return None
+                
                 # Проверяем свежесть кэша из конфига
                 cache_duration = self.config.get('cache_duration_hours', 12) * 3600
                 file_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
@@ -119,6 +135,11 @@ class AsyncApiWorker(QRunnable):
         if not self.config.get('cache_enabled', True):
             return
             
+        # НЕ сохраняем данные за будущие даты
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка сохранить данные за будущую дату: {target_date}")
+            return
+            
         cache_file = os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
         try:
             with open(cache_file, 'w', encoding='utf-8') as f:
@@ -129,6 +150,11 @@ class AsyncApiWorker(QRunnable):
 
     def _fetch_from_api(self, target_date: date) -> Optional[Dict[str, Any]]:
         """Запрашивает данные с API для указанной даты"""
+        # НЕ запрашиваем данные за будущие даты
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка запросить данные за будущую дату: {target_date}")
+            return None
+            
         session = requests.Session()
         
         # Настройки таймаута из конфига
@@ -215,7 +241,7 @@ class AsyncApiWorker(QRunnable):
 class CBRApiClient:
     """
     Клиент для работы с API Центрального Банка России.
-    Обеспечивает получение актуальных курсов валют с обработкой ошибок и кэшированием.
+    Обеспечивает получение актуальных курсов валют с обработкой ошибок и кэширование.
     Поддерживает синхронные и асинхронные запросы.
     """
     
@@ -238,6 +264,9 @@ class CBRApiClient:
         self.cache_dir = "cache"
         self._ensure_cache_dir()
         
+        # Очистка проблемного кэша при инициализации
+        self.cleanup_old_cache()
+        
         # Пул потоков для асинхронной работы
         max_threads = self.config.get('max_concurrent_requests', 2)
         self.thread_pool = QThreadPool()
@@ -254,8 +283,33 @@ class CBRApiClient:
             logger.info(f"Создана директория кэша: {self.cache_dir}")
     
     def _get_cache_filename(self, target_date: date) -> str:
-        """Генерирует имя файла для кэша на основе даты"""
+        """Генерирует имя файла для кэша на основе дата"""
         return os.path.join(self.cache_dir, f"rates_{target_date.strftime('%Y%m%d')}.json")
+    
+    def cleanup_old_cache(self):
+        """Очистка устаревших файлов кэша"""
+        try:
+            current_date = datetime.now().date()
+            cache_files = [f for f in os.listdir(self.cache_dir) 
+                          if f.startswith("rates_") and f.endswith(".json")]
+            
+            for filename in cache_files:
+                try:
+                    # Извлекаем дату из имени файла
+                    date_str = filename.split('_')[1].split('.')[0]
+                    file_date = datetime.strptime(date_str, '%Y%m%d').date()
+                    
+                    # Удаляем файлы с будущими датами или очень старые
+                    if file_date > current_date or (current_date - file_date).days > 30:
+                        filepath = os.path.join(self.cache_dir, filename)
+                        os.remove(filepath)
+                        logger.info(f"Удален проблемный файл кэша: {filename}")
+                except Exception as e:
+                    logger.warning(f"Ошибка обработки файла {filename}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Ошибка очистки кэша: {e}")
     
     def _load_from_cache(self, target_date: date) -> Optional[Dict[str, Any]]:
         """Загружает данные из кэша для указанной даты"""
@@ -263,9 +317,21 @@ class CBRApiClient:
         if not self.config.get('cache_enabled', True):
             return None
             
+        # НЕ пытаемся загружать данные из будущего
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка загрузить данные из будущего: {target_date}")
+            return None
+            
         cache_file = self._get_cache_filename(target_date)
         if os.path.exists(cache_file):
             try:
+                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: файл не должен содержать данные из будущего
+                file_date_str = os.path.basename(cache_file).split('_')[1].split('.')[0]
+                file_date = datetime.strptime(file_date_str, '%Y%m%d').date()
+                if file_date > datetime.now().date():
+                    logger.warning(f"Файл кэша содержит данные из будущего: {file_date}")
+                    return None
+                
                 # Проверяем свежесть кэша из конфига
                 cache_duration = self.config.get('cache_duration_hours', 12) * 3600
                 file_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
@@ -284,6 +350,11 @@ class CBRApiClient:
         if not self.config.get('cache_enabled', True):
             return
             
+        # НЕ сохраняем данные за будущие даты
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка сохранить данные за будущую дату: {target_date}")
+            return
+            
         cache_file = self._get_cache_filename(target_date)
         try:
             with open(cache_file, 'w', encoding='utf-8') as f:
@@ -298,17 +369,28 @@ class CBRApiClient:
             try:
                 # Преобразуем строку даты из API в объект datetime
                 date_str = data['Date'].split('T')[0]  # Берем только часть с датой
-                return datetime.strptime(date_str, '%Y-%m-%d').date()
+                api_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                
+                # ВАЖНОЕ ИСПРАВЛЕНИЕ: если API возвращает будущую дату,
+                # используем текущую дату вместо даты из API
+                if api_date > datetime.now().date():
+                    logger.warning(f"API вернул данные с будущей датой {api_date}, используем текущую дату")
+                    return datetime.now().date()
+                    
+                return api_date
             except (ValueError, IndexError) as e:
-                logger.error(f"Ошибка парсинга дата из API: {e}")
-        return date.today()
+                logger.error(f"Ошибка парсинга даты из API: {e}")
+        return datetime.now().date()
     
     def _get_last_available_cached_data(self) -> Optional[Dict[str, Any]]:
         """Пытается найти последние доступные данные в кэше"""
         try:
-            # Проверяем последние 7 дней
+            # Проверяем последние 7 дней (только прошедшие даты)
             for days_back in range(0, 8):
                 check_date = date.today() - timedelta(days=days_back)
+                # Пропускаем будущие даты
+                if check_date > datetime.now().date():
+                    continue
                 cached_data = self._load_from_cache(check_date)
                 if cached_data:
                     logger.info(f"Найдены кэшированные данные за: {check_date}")
@@ -319,6 +401,11 @@ class CBRApiClient:
 
     def _build_url_for_date(self, target_date: date) -> str:
         """Строит URL для запроса данных на определенную дату"""
+        # НЕ формируем URL для будущих дат
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка сформировать URL для будущей дату: {target_date}")
+            return ""
+            
         base_url = self.config.get('base_url', 'https://www.cbr-xml-daily.ru')
         
         if target_date == date.today():
@@ -330,11 +417,16 @@ class CBRApiClient:
         """
         Создает асинхронный воркер для получения данных.
         """
+        # Фильтруем даты: удаляем будущие даты
+        valid_dates = [d for d in dates if d <= datetime.now().date()]
+        if len(valid_dates) != len(dates):
+            logger.warning("Удалены будущие даты из запроса")
+        
         # Останавливаем предыдущий воркер для этой валюты, если есть
         if hasattr(self, 'current_worker') and self.current_worker:
             self.current_worker.stop()
         
-        worker = AsyncApiWorker(currency_code, dates, self.cache_dir, self.config)
+        worker = AsyncApiWorker(currency_code, valid_dates, self.cache_dir, self.config)
         self.current_worker = worker
         return worker
 
@@ -346,6 +438,11 @@ class CBRApiClient:
         if target_date is None:
             target_date = date.today()
         
+        # НЕ обрабатываем будущие даты
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка получить данные за будущую дату: {target_date}")
+            return self._get_last_available_cached_data()
+        
         # Сначала проверяем кэш на указанную дату
         cached_data = self._load_from_cache(target_date)
         if cached_data:
@@ -355,6 +452,8 @@ class CBRApiClient:
         
         # Формируем URL для запроса
         url = self._build_url_for_date(target_date)
+        if not url:
+            return self._get_last_available_cached_data()
         
         # Настройки повторных попыток из конфига
         max_retries = self.config.get('max_retries', 3)
@@ -373,8 +472,10 @@ class CBRApiClient:
                 if not self._validate_data(data):
                     raise ValueError("Неверная структура данных от API")
                 
-                # Сохраняем в кэш
+                # ВАЖНОЕ ИСПРАВЛЕНИЕ: проверяем дату из API
                 data_date = self._get_cache_date_from_data(data)
+                
+                # Сохраняем в кэш с корректной датой
                 self._save_to_cache(data, data_date)
                 
                 self.last_update = datetime.now()
@@ -445,7 +546,7 @@ class CBRApiClient:
     
     def clear_old_cache(self, days_to_keep: int = 30):
         """
-        Очищает старые файлы кэша.
+        Очищает старые файлов кэша.
         """
         try:
             deleted_count = 0
@@ -455,14 +556,18 @@ class CBRApiClient:
                 if filename.startswith("rates_") and filename.endswith(".json"):
                     filepath = os.path.join(self.cache_dir, filename)
                     
-                    # Получаем время создания файла
-                    file_time = datetime.fromtimestamp(os.path.getctime(filepath))
-                    
-                    # Проверяем, нужно ли удалить файл
-                    if (current_time - file_time).days > days_to_keep:
-                        os.remove(filepath)
-                        deleted_count += 1
-                        logger.debug(f"Удален старый файл кэша: {filename}")
+                    try:
+                        # Получаем время создания файла
+                        file_time = datetime.fromtimestamp(os.path.getctime(filepath))
+                        
+                        # Проверяем, нужно ли удалить файл
+                        if (current_time - file_time).days > days_to_keep:
+                            os.remove(filepath)
+                            deleted_count += 1
+                            logger.debug(f"Удален старый файл кэша: {filename}")
+                    except Exception as e:
+                        logger.warning(f"Ошибка обработки файла {filename}: {e}")
+                        continue
             
             logger.info(f"Очищено файлов кэша: {deleted_count}")
             
