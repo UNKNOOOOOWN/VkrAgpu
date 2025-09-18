@@ -60,15 +60,23 @@ class ChartLoader(QObject):
 class MplCanvas(FigureCanvas):
     """Matplotlib canvas for embedding plots."""
     def __init__(self, parent=None, width=5, height=4, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#1e1e1e')
         self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
         
-        # Настройка внешнего вида
+        # Настройка внешнего вида для темной темы
         self.fig.tight_layout()
-        self.axes.grid(True, alpha=0.3)
-        self.axes.set_facecolor('#f8f9fa')
+        self.axes.grid(True, alpha=0.3, color='#444444')
+        self.axes.set_facecolor('#1e1e1e')
+        self.axes.tick_params(colors='white')
+        self.axes.xaxis.label.set_color('white')
+        self.axes.yaxis.label.set_color('white')
+        self.axes.title.set_color('white')
+        self.axes.spines['bottom'].set_color('#444444')
+        self.axes.spines['top'].set_color('#444444')
+        self.axes.spines['right'].set_color('#444444')
+        self.axes.spines['left'].set_color('#444444')
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +93,9 @@ class MainWindow(QMainWindow):
         self.data_config = self.config.get('data', {})
         self.ui_config = self.config.get('ui', {})
         self.performance_config = self.config.get('performance', {})
+        
+        # Принудительно устанавливаем темную тему
+        self.config['ui']['theme'] = 'dark'
         
         # Инициализируем модули с конфигом
         self.api_client = CBRApiClient(config=self.api_config)
@@ -103,6 +114,9 @@ class MainWindow(QMainWindow):
         # Текущая загружаемая валюта
         self.current_currency = None
         self.current_period = self.data_config.get('default_chart_days', 3)
+        
+        # Флаг для отслеживания состояния загрузки
+        self.is_loading = False
         
         self.init_ui()
         
@@ -133,25 +147,26 @@ class MainWindow(QMainWindow):
         
         # Главный виджет и layout
         central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)  # Горизонтальный layout
+        
+        # Левая часть - график и элементы управления
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
         
         # Панель управления
         control_panel = self.create_control_panel()
-        main_layout.addWidget(control_panel)
-        
-        # Сплиттер для таблицы и графика
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # Таблица с курсами валют
-        self.create_currency_table()
-        splitter.addWidget(self.table)
+        left_layout.addWidget(control_panel)
         
         # График
         self.create_chart_widget()
-        splitter.addWidget(self.chart_widget)
+        left_layout.addWidget(self.chart_widget)
         
-        splitter.setSizes([400, 400])
-        main_layout.addWidget(splitter)
+        # Правая часть - таблица с котировками
+        self.create_currency_table()
+        
+        # Добавляем компоненты в главный layout
+        main_layout.addWidget(left_widget, 2)  # 2/3 ширины для левой части
+        main_layout.addWidget(self.table, 1)   # 1/3 ширины для таблицы
         
         # Статус бар
         self.statusBar().showMessage("Готово к работе")
@@ -179,6 +194,13 @@ class MainWindow(QMainWindow):
         refresh_action = QAction("Обновить", self)
         refresh_action.triggered.connect(self.refresh_data)
         view_menu.addAction(refresh_action)
+        
+        # Меню Сервис
+        service_menu = menubar.addMenu("Сервис")
+        
+        clear_cache_action = QAction("Очистить кэш", self)
+        clear_cache_action.triggered.connect(self.clear_cache)
+        service_menu.addAction(clear_cache_action)
     
     def create_toolbar(self):
         """Создание тулбара."""
@@ -266,24 +288,24 @@ class MainWindow(QMainWindow):
                 "Изменение", "Изменение %"
             ])
         
-        # Настройка таблицы
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        # ФИКСИРОВАННЫЕ РАЗМЕРЫ КОЛОНОК БЕЗ ВОЗМОЖНОСТИ РЕГУЛИРОВКИ
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.itemSelectionChanged.connect(self.on_table_selection_changed)
         
-        # Установка ширины колонок
+        # Устанавливаем фиксированные размеры колонок
         self.table.setColumnWidth(0, 60)   # Код
-        self.table.setColumnWidth(1, 150)  # Валюта
-        self.table.setColumnWidth(2, 70)   # Номинал
-        self.table.setColumnWidth(3, 100)  # Курс
-        self.table.setColumnWidth(4, 100)  # Предыдущий
-        self.table.setColumnWidth(5, 100)  # Изменение
-        self.table.setColumnWidth(6, 100)  # Изменение %
+        self.table.setColumnWidth(1, 170)  # Валюта
+        self.table.setColumnWidth(2, 80)   # Номинал
+        self.table.setColumnWidth(3, 120)  # Курс
+        self.table.setColumnWidth(4, 120)  # Предыдущий
+        self.table.setColumnWidth(5, 120)  # Изменение
+        self.table.setColumnWidth(6, 120)  # Изменение %
         
         if show_volatility:
-            self.table.setColumnWidth(7, 100)  # Волатильность
+            self.table.setColumnWidth(7, 120)  # Волатильность
     
     def create_chart_widget(self):
         """Создание виджета для графика."""
@@ -309,7 +331,7 @@ class MainWindow(QMainWindow):
         # Индикатор загрузки
         self.loading_label = QLabel("")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setStyleSheet("color: gray; font-style: italic;")
+        self.loading_label.setStyleSheet("color: #cccccc; font-style: italic;")
         layout.addWidget(self.loading_label)
         
         # Прогресс-бар
@@ -345,11 +367,16 @@ class MainWindow(QMainWindow):
     
     def refresh_data(self):
         """Обновление данных."""
+        if self.is_loading:
+            logger.warning("Операция обновления уже выполняется")
+            return
+            
+        self.is_loading = True
         try:
             self.statusBar().showMessage("Загрузка данных...")
+            QApplication.processEvents()  # Обновляем UI
             
             # Получаем и обрабатываем данные через DataHandler
-            initial_days = self.data_config.get('initial_load_days', 3)
             data = self.data_handler.fetch_and_process_data()
             
             if data:
@@ -358,12 +385,20 @@ class MainWindow(QMainWindow):
                 self.update_currency_combos()
                 self.statusBar().showMessage(f"Данные обновлены. Валют: {len(data)}")
             else:
-                self.statusBar().showMessage("Ошибка загрузки данных")
+                self.statusBar().showMessage("Ошибка загрузки данных - используем кэш")
+                # Пытаемся использовать последние доступные данные
+                if hasattr(self.data_handler, 'processed_data') and self.data_handler.processed_data:
+                    self.current_data = self.data_handler.processed_data
+                    self.update_currency_table()
+                    self.update_currency_combos()
+                    self.statusBar().showMessage(f"Используем кэшированные данные. Валют: {len(self.current_data)}")
                 
         except Exception as e:
             logger.error(f"Ошибка при обновлении данных: {e}")
             self.statusBar().showMessage("Ошибка при обновлении данных")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить данные: {str(e)}")
+            # Не показываем MessageBox, чтобы не блокировать программу
+        finally:
+            self.is_loading = False
     
     def update_currency_table(self):
         """Обновление таблицы с данными о курсах валют."""
@@ -371,7 +406,6 @@ class MainWindow(QMainWindow):
             return
             
         show_volatility = self.ui_config.get('table_show_volatility', False)
-        column_count = 8 if show_volatility else 7
         self.table.setRowCount(len(self.current_data))
         
         for row, currency in enumerate(self.current_data):
@@ -387,7 +421,7 @@ class MainWindow(QMainWindow):
             ]
             
             # Цвет для изменений (зеленый - рост, красный - падение)
-            color = QColor(0, 128, 0) if currency['abs_change'] >= 0 else QColor(200, 0, 0)
+            color = QColor(107, 207, 127) if currency['abs_change'] >= 0 else QColor(255, 107, 107)
             items[5].setForeground(color)  # Изменение
             items[6].setForeground(color)  # Изменение %
             
@@ -500,11 +534,11 @@ class MainWindow(QMainWindow):
                 
                 # Цвет в зависимости от уровня волатильности
                 if volatility > 2.0:
-                    vol_item.setForeground(QColor(200, 0, 0))  # Высокая волатильность
+                    vol_item.setForeground(QColor(255, 107, 107))  # Высокая волатильность
                 elif volatility > 1.0:
-                    vol_item.setForeground(QColor(200, 100, 0))  # Средняя волатильность
+                    vol_item.setForeground(QColor(255, 217, 61))  # Средняя волатильность
                 else:
-                    vol_item.setForeground(QColor(0, 128, 0))  # Низкая волатильность
+                    vol_item.setForeground(QColor(107, 207, 127))  # Низкая волатильность
                     
                 self.table.setItem(row, 7, vol_item)
                 break
@@ -517,11 +551,11 @@ class MainWindow(QMainWindow):
         self.hide_loading_indicator()
         
         # Показываем сообщение об ошибке
-        self.chart_title.setText(f"Ошибка загрузки данных для {currency_code}")
+        self.chart_title.setText(f"Ошибка загрузка данных для {currency_code}")
         self.canvas.axes.clear()
         self.canvas.axes.text(0.5, 0.5, error_message, 
                             horizontalalignment='center', verticalalignment='center',
-                            transform=self.canvas.axes.transAxes, fontsize=10)
+                            transform=self.canvas.axes.transAxes, fontsize=10, color='white')
         self.canvas.draw()
         self.stats_label.setText("")
     
@@ -543,9 +577,9 @@ class MainWindow(QMainWindow):
         
         # Построение графика
         self.canvas.axes.plot(dates, values, 'b-', linewidth=2, label='Курс', marker='o', markersize=3)
-        self.canvas.axes.set_xlabel('Дата')
-        self.canvas.axes.set_ylabel('Курс, руб.')
-        self.canvas.axes.set_title(f'Динамика курса {currency_code} за {len(dates)} дней')
+        self.canvas.axes.set_xlabel('Дата', color='white')
+        self.canvas.axes.set_ylabel('Курс, руб.', color='white')
+        self.canvas.axes.set_title(f'Динамика курса {currency_code} за {len(dates)} дней', color='white')
         self.canvas.axes.legend()
         
         # Форматирование дат на оси X
@@ -590,15 +624,34 @@ class MainWindow(QMainWindow):
         """Экспорт данных в файл."""
         QMessageBox.information(self, "Экспорт", "Функция экспорта в разработке")
     
+    def clear_cache(self):
+        """Очистка кэша данных."""
+        try:
+            self.data_handler.clear_cache()
+            self.chart_cache.clear()
+            self.api_client.clear_old_cache()
+            QMessageBox.information(self, "Очистка кэша", "Кэш данных успешно очищен")
+            logger.info("Кэш данных очищен пользователем")
+        except Exception as e:
+            logger.error(f"Ошибка очистки кэша: {e}")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось очистить кэш: {str(e)}")
+    
     def closeEvent(self, event):
         """Обработчик закрытия окна."""
         # Останавливаем загрузчик
         self.chart_loader.stop()
         self.chart_loader_thread.quit()
-        self.chart_loader_thread.wait()
+        self.chart_loader_thread.wait(2000)  # Ждем до 2 секунд
         
         # Останавливаем таймер
         if hasattr(self, 'timer'):
             self.timer.stop()
+        
+        # Сохраняем последние данные перед выходом
+        try:
+            if hasattr(self.data_handler, 'processed_data') and self.data_handler.processed_data:
+                logger.info("Сохраняем данные перед выходом")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении данных: {e}")
         
         event.accept()
