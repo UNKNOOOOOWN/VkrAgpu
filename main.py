@@ -19,6 +19,9 @@ def setup_application(config: dict):
     """
     app = QApplication(sys.argv)
     
+    # Принудительно устанавливаем темную тему
+    config['ui']['theme'] = 'dark'
+    
     # Устанавливаем метаданные приложения из конфига
     app_name = get_config_value(config, 'app.name', 'PulseCurrency')
     app_version = get_config_value(config, 'app.version', __version__)
@@ -43,11 +46,8 @@ def load_styles(app: QApplication, config: dict):
             with open(styles_path, 'r', encoding='utf-8') as f:
                 styles = f.read()
                 
-                # Применяем тему из конфига
-                theme = get_config_value(config, 'ui.theme', 'light')
-                if theme == 'dark':
-                    # Можно добавить преобразование в темную тему
-                    styles += "\n/* Dark theme applied */"
+                # Применяем темную тему
+                styles += "\n/* Dark theme applied */"
                 
                 # Удаляем проблемные свойства анимации
                 styles = styles.replace('animation: progressAnimation 2s infinite;', '')
@@ -66,7 +66,7 @@ def show_splash_screen(config: dict):
     """
     try:
         splash_pix = QPixmap(300, 200)
-        splash_pix.fill(Qt.GlobalColor.white)
+        splash_pix.fill(Qt.GlobalColor.darkGray)
         
         splash = QSplashScreen(splash_pix, Qt.WindowType.WindowStaysOnTopHint)
         splash.setFont(QFont("Segoe UI", 10))
@@ -76,7 +76,7 @@ def show_splash_screen(config: dict):
         
         splash.showMessage(f"Загрузка {app_name} v{app_version}...\nПодождите пожалуйста", 
                           Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
-                          Qt.GlobalColor.black)
+                          Qt.GlobalColor.white)
         splash.show()
         
         QApplication.processEvents()
@@ -151,7 +151,7 @@ def main():
         if splash:
             splash.showMessage("Инициализация данных...", 
                              Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
-                             Qt.GlobalColor.black)
+                             Qt.GlobalColor.white)
             QApplication.processEvents()
         
         # Создание главного окна с передачей конфига
