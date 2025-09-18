@@ -4,6 +4,8 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import numpy as np
+from threading import Thread, Event
+import queue
 
 # Импортируем наши модули
 from core.api_client import CBRApiClient
@@ -11,6 +13,7 @@ from core.calculator import Calculator
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
+
 
 class DataHandler:
     """
@@ -52,18 +55,52 @@ class DataHandler:
 
         logger.info(f"Запрос данных за {target_date or 'текущую дату'}")
 
-        # 1. Получаем СЫРЫЕ данные через API-клиент
-        raw_data = self.api_client.get_rates(target_date)
-        if not raw_data:
-            logger.error("DataHandler: не удалось получить сырые данные.")
-            return None
-
-        # 2. Парсим и обрабатываем сырые данные
-        self.processed_data = self._parse_and_process(raw_data, target_date)
-        self.last_update = datetime.now()
+        # Добавляем таймаут для операции
+        result_queue = queue.Queue()
+        stop_event = Event()
         
-        logger.info(f"Данные обработаны. Получено записей: {len(self.processed_data)}")
-        return self.processed_data
+        def worker():
+            try:
+                if stop_event.is_set():
+                    return
+                    
+                # 1. Получаем СЫРЫЕ данные через API-клиент
+                raw_data = self.api_client.get_rates(target_date)
+                if not raw_data:
+                    logger.error("DataHandler: не удалось получить сырые данные.")
+                    result_queue.put(None)
+                    return
+                
+                # 2. Парсим и обрабатываем сырые данные
+                processed_data = self._parse_and_process(raw_data, target_date)
+                result_queue.put(processed_data)
+                
+            except Exception as e:
+                logger.error(f"Ошибка в worker: {e}")
+                result_queue.put(None)
+        
+        thread = Thread(target=worker)
+        thread.daemon = True
+        thread.start()
+        thread.join(30)  # 30 секунд таймаут
+        
+        if thread.is_alive():
+            stop_event.set()
+            logger.warning("Таймаут при загрузке данных")
+            # Пытаемся использовать последние кэшированные данные
+            if self.processed_data:
+                return self.processed_data
+            return None
+            
+        result = result_queue.get()
+        if result:
+            self.processed_data = result
+            self.last_update = datetime.now()
+            logger.info(f"Данные обработаны. Получено записей: {len(self.processed_data)}")
+        else:
+            logger.warning("Не удалось получить данные")
+            
+        return result
 
     def _parse_and_process(self, raw_data: Dict, target_date: Optional[date] = None) -> List[Dict]:
         """
@@ -72,7 +109,21 @@ class DataHandler:
         """
         processed_list = []
         valute_dict = raw_data.get('Valute', {})
-        actual_date = target_date or datetime.now().date()
+        
+        # ВАЖНОЕ ИСПРАВЛЕНИЕ: проверяем дату из API
+        try:
+            if 'Date' in raw_data:
+                date_str = raw_data['Date'].split('T')[0]
+                api_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                # Если API вернул будущую дату, используем текущую
+                if api_date > datetime.now().date():
+                    actual_date = datetime.now().date()
+                else:
+                    actual_date = api_date
+            else:
+                actual_date = datetime.now().date()
+        except:
+            actual_date = datetime.now().date()
 
         for char_code, currency_info in valute_dict.items():
             try:
@@ -136,6 +187,11 @@ class DataHandler:
         if not self.data_config.get('cache_enabled', True):
             return self.api_client.get_rates(target_date)
             
+        # НЕ обрабатываем будущие даты
+        if target_date > datetime.now().date():
+            logger.warning(f"Попытка получить данные за будущую дату: {target_date}")
+            return None
+            
         cache_key = target_date.isoformat()
         daily_cache_duration = self.data_config.get('daily_cache_duration_hours', 1) * 3600
         
@@ -187,13 +243,17 @@ class DataHandler:
                 logger.warning(f"Валюта {char_code} не найдена")
                 return None
 
-            # Получаем список дат для запроса (только рабочие дни)
+            # Получаем список дат для запроса (только рабочие дни и прошедшие даты)
             end_date = datetime.now().date()
             date_list = self._get_business_dates(end_date, days)
             
             # Получаем данные за все даты
             all_data = []
             for target_date in date_list:
+                # Пропускаем будущие даты
+                if target_date > datetime.now().date():
+                    continue
+                    
                 daily_data = self._get_cached_daily_data(target_date)
                 if daily_data and char_code in daily_data.get('Valute', {}):
                     valute_info = daily_data['Valute'][char_code]
@@ -246,12 +306,18 @@ class DataHandler:
     def _get_business_dates(self, end_date: date, days: int) -> List[date]:
         """
         Возвращает список рабочих дней (пн-пт) за указанный период.
+        Только прошедшие даты.
         """
         date_list = []
         current_date = end_date
         
         # Собираем дни в обратном порядке (от текущего к прошлому)
         while len(date_list) < days and current_date > end_date - timedelta(days=days * 2):
+            # Пропускаем будущие даты
+            if current_date > datetime.now().date():
+                current_date -= timedelta(days=1)
+                continue
+                
             if current_date.weekday() < 5:  # 0-4 = пн-пт
                 date_list.append(current_date)
             current_date -= timedelta(days=1)
@@ -274,7 +340,7 @@ class DataHandler:
         max_chart_days = self.data_config.get('max_chart_days', 7)
         days = min(days, max_chart_days)
         
-        # Получаем список дат для запроса
+        # Получаем список дат для запроса (только прошедшие даты)
         end_date = datetime.now().date()
         date_list = self._get_business_dates(end_date, days)
         
@@ -293,11 +359,18 @@ class DataHandler:
             # Преобразуем данные в нужный формат
             all_data = []
             for date_str, daily_data in data.items():
+                # Пропускаем будущие даты
+                try:
+                    data_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    if data_date > datetime.now().date():
+                        continue
+                except:
+                    continue
+                    
                 if daily_data and 'Valute' in daily_data and currency_code in daily_data['Valute']:
                     valute_info = daily_data['Valute'][currency_code]
-                    target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
                     all_data.append({
-                        'date': target_date,
+                        'date': data_date,
                         'value': valute_info['Value'],
                         'normalized_value': valute_info['Value'] / valute_info['Nominal']
                     })
